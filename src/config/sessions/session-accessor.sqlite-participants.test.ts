@@ -1,13 +1,19 @@
 import { existsSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  onSessionLifecycleEvent,
+  type SessionLifecycleEvent,
+} from "../../sessions/session-lifecycle-events.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   deleteSessionEntryLifecycle,
+  listSessionEntriesCore,
   listSessionParticipantsReadOnly,
   loadExactSessionEntryCandidatesReadOnlyBatch,
   loadSessionEntry,
@@ -15,8 +21,23 @@ import {
   recordSessionParticipant,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
+import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
 import type { SessionParticipantIdentity } from "./session-participant-identity.js";
+
+const parseSessionEntryCalls = vi.hoisted(() => vi.fn());
+vi.mock("./session-accessor.sqlite-status.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./session-accessor.sqlite-status.js")>();
+  return {
+    ...actual,
+    parseSessionEntryJson: (...args: Parameters<typeof actual.parseSessionEntryJson>) => {
+      if (args[0].current_session_id === undefined) {
+        parseSessionEntryCalls();
+      }
+      return actual.parseSessionEntryJson(...args);
+    },
+  };
+});
 
 const profile = (id: string): SessionParticipantIdentity => ({ type: "profile", id });
 const remote = (id: string, domain = "workspace"): SessionParticipantIdentity => ({
@@ -29,7 +50,199 @@ const remote = (id: string, domain = "workspace"): SessionParticipantIdentity =>
 
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
+async function participantCacheFixture(env: NodeJS.ProcessEnv) {
+  const scope = { agentId: "main", env, sessionKey: "agent:main:participant-cache" };
+  await upsertSessionEntryCore(scope, { sessionId: "participant-cache", updatedAt: 1 });
+  await upsertSessionEntryCore(
+    { ...scope, sessionKey: "agent:main:sibling" },
+    { sessionId: "sibling", updatedAt: 1 },
+  );
+  recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+  recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 20 });
+  return {
+    scope,
+    database: openOpenClawAgentDatabase(scope),
+    read: () => listSessionEntriesCore({ ...scope, clone: false, projection: "list" }),
+  };
+}
+
 describe("SQLite session participants", () => {
+  it.each([
+    {
+      name: "later",
+      id: "a",
+      first: 10,
+      at: 30,
+      last: 30,
+      count: 2,
+      stable: true,
+      order: ["a", "b"],
+    },
+    {
+      name: "equal",
+      id: "a",
+      first: 10,
+      at: 10,
+      last: 10,
+      count: 2,
+      stable: true,
+      order: ["a", "b"],
+    },
+    {
+      name: "unknown first",
+      id: "a",
+      first: null,
+      at: 30,
+      last: 30,
+      count: 2,
+      stable: true,
+      order: ["a", "b"],
+    },
+    {
+      name: "insert",
+      id: "c",
+      first: 15,
+      at: 15,
+      last: 15,
+      count: 1,
+      stable: false,
+      order: ["a", "c", "b"],
+    },
+    {
+      name: "backdate",
+      id: "b",
+      first: 5,
+      at: 5,
+      last: 20,
+      count: 2,
+      stable: false,
+      order: ["b", "a"],
+    },
+    {
+      name: "caller invalidation",
+      id: "a",
+      first: 10,
+      at: 30,
+      last: 30,
+      count: 2,
+      stable: false,
+      order: ["b", "a"],
+    },
+  ])("preserves participant cache coherence for $name input", async (input) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { scope, database, read } = await participantCacheFixture(state.env);
+      if (input.first === null) {
+        runOpenClawAgentWriteTransaction((db) => {
+          db.db
+            .prepare(
+              "UPDATE session_participants SET first_prompted_at = NULL WHERE session_key = ? AND actor_id = ?",
+            )
+            .run(scope.sessionKey, input.id);
+          publishSessionEntryCacheInvalidation(db);
+        }, scope);
+      }
+      const before = read();
+      expect(before).toHaveLength(2);
+      if (input.name === "caller invalidation") {
+        runOpenClawAgentWriteTransaction((db) => {
+          db.db
+            .prepare(
+              "UPDATE session_participants SET first_prompted_at = 5 WHERE session_key = ? AND actor_id = 'b'",
+            )
+            .run(scope.sessionKey);
+          publishSessionEntryCacheInvalidation(db);
+        }, scope);
+      }
+      const events: Array<{ event: SessionLifecycleEvent; inTransaction: boolean }> = [];
+      const stop = onSessionLifecycleEvent((event) => {
+        if (event.sessionKey === scope.sessionKey && event.reason === "participants") {
+          events.push({ event, inTransaction: database.db.isTransaction });
+        }
+      });
+      try {
+        parseSessionEntryCalls.mockClear();
+        expect(
+          recordSessionParticipant(scope, { identity: profile(input.id), promptedAt: input.at }),
+        ).toBe(input.name === "insert" ? "inserted" : "updated");
+        const after = read();
+        expect(after).toHaveLength(before.length);
+        expect(
+          after.find((row) => row.sessionKey === scope.sessionKey)?.entry.participants,
+        ).toEqual(input.order.map((id) => ({ identity: profile(id) })));
+        if (input.stable) {
+          expect(parseSessionEntryCalls).not.toHaveBeenCalled();
+          after.forEach((row, index) => expect(row.entry).toBe(before[index]?.entry));
+        }
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toContainEqual({
+          identity: profile(input.id),
+          contributionCount: input.count,
+          firstPromptedAt: input.first,
+          lastPromptedAt: input.last,
+        });
+        expect(events).toEqual([
+          {
+            event: expect.objectContaining({
+              agentId: "main",
+              sessionKey: scope.sessionKey,
+              reason: "participants",
+            }),
+            inTransaction: false,
+          },
+        ]);
+      } finally {
+        stop();
+      }
+    });
+  });
+
+  it("keeps participant cache and lifecycle publication behind the outer commit", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { scope, database, read } = await participantCacheFixture(state.env);
+      const before = read();
+      const records = listSessionParticipantsReadOnly(scope).get(scope.sessionKey);
+      const events: Array<{ event: SessionLifecycleEvent; inTransaction: boolean }> = [];
+      const stop = onSessionLifecycleEvent((event) => {
+        if (event.sessionKey === scope.sessionKey && event.reason === "participants") {
+          events.push({ event, inTransaction: database.db.isTransaction });
+        }
+      });
+      const write = () => {
+        recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 30 });
+        recordSessionParticipant(scope, { identity: profile("c"), promptedAt: 15 });
+        expect(events).toHaveLength(0);
+      };
+      try {
+        expect(() =>
+          runOpenClawAgentWriteTransaction(() => {
+            write();
+            throw new Error("participant rollback");
+          }, scope),
+        ).toThrow("participant rollback");
+        parseSessionEntryCalls.mockClear();
+        const rolledBack = read();
+        expect(rolledBack).toEqual(before);
+        rolledBack.forEach((row, index) => expect(row.entry).toBe(before[index]?.entry));
+        expect(parseSessionEntryCalls).not.toHaveBeenCalled();
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toEqual(records);
+        expect(events).toHaveLength(0);
+        runOpenClawAgentWriteTransaction(write, scope);
+        expect(events).toHaveLength(2);
+        expect(events.every((event) => !event.inTransaction)).toBe(true);
+        expect(
+          read().find((row) => row.sessionKey === scope.sessionKey)?.entry.participantCount,
+        ).toBe(3);
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toContainEqual({
+          identity: profile("a"),
+          contributionCount: 2,
+          firstPromptedAt: 10,
+          lastPromptedAt: 30,
+        });
+      } finally {
+        stop();
+      }
+    });
+  });
+
   it("isolates an invalid participant identity to its requested session", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const scope = { agentId: "main", env: state.env };
@@ -169,9 +382,21 @@ describe("SQLite session participants", () => {
           recordSessionParticipant(scope, { identity: remote(`remote-${index}`), promptedAt: 30 });
         }
         linkEmail("old@example.test", current.id, { env: state.env });
+        const listScope = { ...scope, clone: false, projection: "list" as const };
+        const cached = listSessionEntriesCore(listScope)[0]?.entry;
+        expect(cached?.participantCount).toBe(MAX_SESSION_PARTICIPANTS);
+        parseSessionEntryCalls.mockClear();
         expect(
           recordSessionParticipant(scope, { identity: profile(current.id), promptedAt: 40 }),
         ).toBe("updated");
+        const listed = listSessionEntriesCore(listScope)[0]?.entry;
+        if (hasCanonicalRow) {
+          expect(listed).toBe(cached);
+          expect(parseSessionEntryCalls).not.toHaveBeenCalled();
+        } else {
+          expect(listed).not.toBe(cached);
+          expect(parseSessionEntryCalls).toHaveBeenCalled();
+        }
         const records = listSessionParticipantsReadOnly(scope).get(scope.sessionKey) ?? [];
         expect(records).toHaveLength(MAX_SESSION_PARTICIPANTS);
         const profiles = records.filter((record) => record.identity.type === "profile");

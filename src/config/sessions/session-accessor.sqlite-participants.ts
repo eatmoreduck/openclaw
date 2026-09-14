@@ -96,7 +96,14 @@ export function recordSessionParticipant(
               .doUpdateSet(aggregate),
           ),
       );
-      publishSessionEntryCacheInvalidation(database);
+      // Counts and last-input times do not change the cached participant identities or order.
+      if (
+        !existing ||
+        existing.actor_id !== actorId ||
+        aggregate.first_prompted_at !== existing.first_prompted_at
+      ) {
+        publishSessionEntryCacheInvalidation(database);
+      }
       deferOpenClawAgentPostCommitPublication(database, () =>
         emitSessionLifecycleEvent({
           agentId: resolved.agentId,
