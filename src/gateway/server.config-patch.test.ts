@@ -440,6 +440,7 @@ describe("gateway config methods", () => {
         .toEqual({
           level: "info",
         });
+      await expect.poll(() => getRuntimeConfig().logging?.level).toBe("info");
       const draft = await getCurrentConfigObject();
       const raw = JSON.stringify(
         method === "config.patch"
@@ -454,6 +455,8 @@ describe("gateway config methods", () => {
       expect(stale.error?.message).toContain("config changed since last load");
       expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({ level: "warn" });
       await expect.poll(getConfigHash).not.toBe(draft.hash);
+      // Disk revisions are visible before the watcher finishes runtime env publication.
+      await expect.poll(() => getRuntimeConfig().logging?.level).toBe("warn");
       const fresh = await rpcReq<{ hash: string }>(requireClient(), method, {
         raw,
         baseHash: await getConfigHash(),
