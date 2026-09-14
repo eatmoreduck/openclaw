@@ -6,6 +6,7 @@ import {
   planManifestModelCatalogSuppressions,
   type ManifestModelCatalogSuppressionEntry,
 } from "../model-catalog/index.js";
+import { normalizePluginsConfig, type NormalizedPluginsConfig } from "./config-state.js";
 import {
   isManifestPluginAvailableForControlPlane,
   loadManifestMetadataSnapshot,
@@ -25,6 +26,7 @@ function listManifestModelCatalogSuppressions(params: {
   snapshot: PluginMetadataSnapshot;
 }): readonly ManifestModelCatalogSuppressionEntry[] {
   const snapshot = params.snapshot;
+  let normalizedConfig: NormalizedPluginsConfig | undefined;
   const registry = {
     diagnostics: snapshot.diagnostics,
     plugins: snapshot.plugins.filter((plugin) =>
@@ -32,6 +34,9 @@ function listManifestModelCatalogSuppressions(params: {
         snapshot,
         plugin,
         config: params.config,
+        normalizedConfig:
+          params.config?.plugins &&
+          (normalizedConfig ??= normalizePluginsConfig(params.config.plugins)),
       }),
     ),
   };
