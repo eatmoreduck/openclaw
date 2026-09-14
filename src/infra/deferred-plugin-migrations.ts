@@ -2,10 +2,16 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
+import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
+import {
+  withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
+  withExistingOpenClawStateDatabaseCurrentReadOnly,
+} from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import { withSharedStateWriteCoordinator } from "../state/openclaw-state-db-write-coordination.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
 import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
@@ -82,6 +88,12 @@ function pendingMigrationRecords(rows: ReturnType<typeof readMigrationRows>) {
     .map((row) => deferredPluginMigrationSchema.parse(JSON.parse(row.report_json)));
 }
 
+function readPendingMigrationRecords(database: DatabaseSync) {
+  return tableExists(database, "migration_runs")
+    ? pendingMigrationRecords(readMigrationRows(database))
+    : [];
+}
+
 function assertPendingGeneration(
   current: readonly DeferredPluginMigration[],
   expected: readonly DeferredPluginMigration[],
@@ -95,12 +107,10 @@ export function readDeferredPluginMigrations(
   options: { env?: NodeJS.ProcessEnv } = {},
 ): readonly DeferredPluginMigration[] {
   return (
-    withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(({ db }) => {
-      if (!tableExists(db, "migration_runs")) {
-        return [];
-      }
-      return pendingMigrationRecords(readMigrationRows(db));
-    }, options) ?? []
+    withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+      ({ db }) => readPendingMigrationRecords(db),
+      options,
+    ) ?? []
   );
 }
 
@@ -121,19 +131,33 @@ export function withDeferredPluginMigrationsCurrent<T>(
   },
   publish: () => T,
 ): T {
-  return runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      const pending = pendingMigrationRecords(readMigrationRows(db));
-      if (!isDeepStrictEqual(pending, params.expectedPending) && params.onConflict) {
-        // Commit preservation facts against these rows; callers refuse publication after return.
-        return params.onConflict(pending);
+  const databasePath = resolveOpenClawStateSqlitePath(params.env);
+  const existing = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(databasePath);
+  return withSharedStateWriteCoordinator({ databasePath, existing: existing?.db }, () => {
+    // Exclude obligation writers without bootstrapping or migrating unrelated state.
+    if (params.expectedPending.length === 0 && !existing?.db.isTransaction) {
+      const pending = withExistingOpenClawStateDatabaseCurrentReadOnly(
+        ({ db }) => readPendingMigrationRecords(db),
+        params,
+      );
+      if (!pending?.length) {
+        return publish();
       }
-      assertPendingGeneration(pending, params.expectedPending);
-      return publish();
-    },
-    { env: params.env },
-    { operationLabel: "state.plugin-migration-input-publication" },
-  );
+    }
+    return runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        const pending = pendingMigrationRecords(readMigrationRows(db));
+        if (!isDeepStrictEqual(pending, params.expectedPending) && params.onConflict) {
+          // Commit preservation facts against these rows; callers refuse publication after return.
+          return params.onConflict(pending);
+        }
+        assertPendingGeneration(pending, params.expectedPending);
+        return publish();
+      },
+      { env: params.env },
+      { operationLabel: "state.plugin-migration-input-publication" },
+    );
+  });
 }
 
 export function formatDeferredPluginMigration(pending: DeferredPluginMigration): string {

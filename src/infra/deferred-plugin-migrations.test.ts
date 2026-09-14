@@ -1,17 +1,30 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { withOpenClawStateDatabaseReadSnapshot } from "../state/openclaw-state-db-readonly.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
   readDeferredPluginMigrations,
   recordDeferredPluginMigrations,
+  withDeferredPluginMigrationsCurrent,
 } from "./deferred-plugin-migrations.js";
+import { tryAcquireExclusiveSqliteCoordinator } from "./sqlite-coordinator.js";
 import {
   readMigrationCheckpointStatus,
   recordSuccessfulStartupMigrations,
 } from "./startup-migration-checkpoint.js";
+import {
+  resolveStateDatabaseCoordinatorPath,
+  resolveStateLifecycleRuntimeDirectory,
+} from "./state-database-coordinator.js";
 
 const log = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn() }));
 vi.mock("../logging/subsystem.js", async (importOriginal) => {
@@ -48,6 +61,73 @@ describe("deferred configured-plugin migrations", () => {
     expect(readDeferredPluginMigrations({ env })).toEqual([]);
     expect(fs.existsSync(stateDir)).toBe(false);
   });
+
+  it.each(["absent", "historical"] as const)(
+    "publishes without changing %s state when no plugin migration is pending",
+    (state) => {
+      const { env, stateDir } = fixture();
+      const databasePath = resolveOpenClawStateSqlitePath(env);
+      if (state === "historical") {
+        openOpenClawStateDatabase({ env });
+        closeOpenClawStateDatabaseForTest();
+        using database = new DatabaseSync(databasePath);
+        // Match the rollback rehearsal: publication does not own schema repair.
+        database.exec("PRAGMA user_version = 7");
+      }
+      const before = state === "historical" ? fs.readFileSync(databasePath) : undefined;
+      const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+        databasePath,
+        runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
+        uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+      });
+      const outputPath = path.join(path.dirname(stateDir), "published.txt");
+      withDeferredPluginMigrationsCurrent({ env, expectedPending: [] }, () => {
+        const contender = tryAcquireExclusiveSqliteCoordinator(coordinatorPath, {
+          busyTimeoutMs: 0,
+        });
+        try {
+          expect(contender).toBeNull();
+          fs.writeFileSync(outputPath, "published");
+        } finally {
+          contender?.release();
+        }
+      });
+      expect(fs.readFileSync(outputPath, "utf8")).toBe("published");
+      if (before) {
+        expect(fs.readFileSync(databasePath)).toEqual(before);
+      } else {
+        expect(fs.existsSync(stateDir)).toBe(false);
+      }
+    },
+  );
+
+  it.each(["discovery snapshot", "outer transaction"] as const)(
+    "rechecks newly claimed inputs within %s scope before publication",
+    async (scope) => {
+      const { env, stateDir } = fixture();
+      openOpenClawStateDatabase({ env });
+      const outputPath = path.join(path.dirname(stateDir), "published.txt");
+      const publish = () => {
+        recordDeferredPluginMigrations({
+          env,
+          pending: [
+            { pluginId: "sample", reason: "Missing package", command: "openclaw doctor --fix" },
+          ],
+        });
+        expect(() =>
+          withDeferredPluginMigrationsCurrent({ env, expectedPending: [] }, () => {
+            fs.writeFileSync(outputPath, "published");
+          }),
+        ).toThrow("Plugin migration obligations changed");
+        expect(fs.existsSync(outputPath)).toBe(false);
+      };
+      if (scope === "discovery snapshot") {
+        await withOpenClawStateDatabaseReadSnapshot(async () => publish(), { env });
+      } else {
+        runOpenClawStateWriteTransaction(publish, { env });
+      }
+    },
+  );
 
   it.each(["identical", "stronger", "additional"] as const)(
     "resolves only the captured pending generation after an %s report",
