@@ -380,6 +380,16 @@ The core [`show_widget`](/tools/show-widget) tool renders self-contained SVG or 
 
 ## Chat transcript layout
 
+Completed replies can show a compact **Sources** strip when their web links match
+recorded `web_search` or `web_fetch` results from the same run. Select a title and
+domain card to preview its **Search snippet** or **Page excerpt**, then use
+**Open source** to open the recorded page. Previews reuse retrieved content and
+do not fetch pages or site icons when opened. Citation-only results keep a link
+and show **No excerpt available**. Uncited results, failed tools, and results from
+other runs are not included. Source cards require run identity in the transcript
+and follow tool-activity visibility. They are hidden while a run is active or
+transcript search is filtering messages.
+
 In completed dashboard turns, commentary, reasoning-only messages, and tool activity
 share one **Worked for…** disclosure above the answers. Expanding it shows the
 activity in its original order; explicit answer segments and visual results stay
