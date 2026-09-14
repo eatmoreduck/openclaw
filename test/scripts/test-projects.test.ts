@@ -2271,13 +2271,22 @@ describe("scripts/test-projects changed-target routing", () => {
             ? [workerFile, target]
             : [target, workerFile];
       const forwardedArgs = ["--reporter=dot", "--coverage"];
-      expectSingleVitestRunPlan(buildVitestRunPlans([...targets, ...forwardedArgs]), {
-        config: "test/vitest/vitest.gateway.config.ts",
-        forwardedArgs,
-        includePatterns: targets.map((file) =>
-          file === "src/gateway" ? "src/gateway/**/*.test.ts" : file,
-        ),
-      });
+      expect(buildVitestRunPlans([...targets, ...forwardedArgs])).toEqual([
+        {
+          config: "test/vitest/vitest.gateway.config.ts",
+          forwardedArgs,
+          includePatterns: targets.map((file) =>
+            file === "src/gateway" ? "src/gateway/**/*.test.ts" : file,
+          ),
+          watchMode: false,
+        },
+        {
+          config: "test/vitest/vitest.infra.config.ts",
+          forwardedArgs,
+          includePatterns: ["src/gateway/server-methods/memory-search.test.ts"],
+          watchMode: false,
+        },
+      ]);
     },
   );
 
