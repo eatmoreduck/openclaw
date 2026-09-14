@@ -4,7 +4,11 @@ import {
   defaultControlUiFeatureMethods,
   createControlUiMockSameOriginGatewayScript,
 } from "../test-helpers/control-ui-e2e.ts";
-import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
+import {
+  createChatFlowE2eSuite,
+  installMockGateway,
+  waitForChatScrollIdle,
+} from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 
@@ -63,6 +67,8 @@ suite.define(() => {
           await page.locator(`.chat-text[dir="${direction}"]`).first().waitFor();
           const card = page.locator(".session-progress-card--composer");
           await card.waitFor();
+          // Initial transcript scrolling can still change the automatic disclosure state.
+          await waitForChatScrollIdle(page);
           const summary = card.locator("summary");
           if ((await card.getAttribute("open")) !== null) {
             await summary.click();
