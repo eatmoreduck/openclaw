@@ -3122,6 +3122,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ).toEqual([gatewayDatabaseWorkerTestFiles[0]]);
   });
 
+  it("runs wizard recovery once in the host-owned forked database lane", () => {
+    const file = "src/wizard/setup.inference-recovery.integration.test.ts";
+    const infra = createInfraVitestConfig({});
+    expect(infra.test?.pool).toBe("forks");
+    expect(listMatchedTestFiles(infra)).toContain(file);
+    expect(listMatchedTestFiles(createWizardVitestConfig({}))).not.toContain(file);
+  });
+
   it("keeps host-owned database consumers in forks and out of their former projects", () => {
     const infra = createInfraVitestConfig({});
     expect(infra.test?.pool).toBe("forks");
@@ -3138,6 +3146,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createPluginsVitestConfig({}),
         createTasksVitestConfig({}),
         createToolingVitestConfig({}),
+        createWizardVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {
