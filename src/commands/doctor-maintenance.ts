@@ -96,6 +96,7 @@ export async function beginDoctorMaintenance(params: {
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
   let assertContinuationCurrent: (() => void) | undefined;
+  let assertUpdateAdmissionCurrent: (() => void) | undefined;
   const release = async () => {
     if (repairStoresMayBeOpen) {
       await resources?.close();
@@ -129,11 +130,7 @@ export async function beginDoctorMaintenance(params: {
         phase: "inspect",
       });
       assertDoctorMaintenanceInspection(inspection, env);
-      if (
-        parentActivation !== undefined &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
-        inspection.offline !== true
-      ) {
+      if (inspection.serviceUpdateVerdict?.kind !== "absent" && inspection.offline !== true) {
         const inheritedRunId = env[UPDATE_RUN_ID_ENV]?.trim();
         const readAdmission = () => {
           const runs = listUpdateRuns(
@@ -147,6 +144,9 @@ export async function beginDoctorMaintenance(params: {
           return admission;
         };
         const admission = readAdmission();
+        assertUpdateAdmissionCurrent = () => {
+          readAdmission();
+        };
         const continuation =
           admission.kind === "continuation"
             ? admission.run
@@ -156,6 +156,7 @@ export async function beginDoctorMaintenance(params: {
             readAdmission();
             recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
           };
+          assertUpdateAdmissionCurrent = assertContinuationCurrent;
         }
       }
       if (
@@ -183,7 +184,7 @@ export async function beginDoctorMaintenance(params: {
             shouldRestart: true,
             jsonMode: true,
             expectedService: inspection,
-            assertCurrent: assertContinuationCurrent,
+            assertCurrent: assertUpdateAdmissionCurrent,
           });
           assertDoctorMaintenanceInspection(stopped, env);
           if (stopped.stopped) {
@@ -274,7 +275,7 @@ export async function beginDoctorMaintenance(params: {
         const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
           const assertMaintenanceCurrent = () => {
             assertCurrent();
-            assertContinuationCurrent?.();
+            assertUpdateAdmissionCurrent?.();
           };
           assertMaintenanceCurrent();
           const current = await readGatewayServiceState(service, {

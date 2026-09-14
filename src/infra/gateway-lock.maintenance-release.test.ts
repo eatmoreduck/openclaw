@@ -2,23 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
 import { acquireGatewayLock, GatewayLockError } from "./gateway-lock.js";
 
 const owners = vi.hoisted(() => ({
-  closeAgents: vi.fn<(rootPath?: string) => Promise<void>>(),
-  closeShared: vi.fn<(databasePath: string) => Promise<void>>(),
+  closeAgentResource: vi.fn<() => Promise<void>>(),
+  closeSharedResource: vi.fn<() => Promise<void>>(),
   releaseConfig: vi.fn<() => Promise<void>>(),
   releaseState: vi.fn<() => Promise<void>>(),
   releaseGateway: vi.fn<() => void>(),
 }));
 
-vi.mock("../state/openclaw-agent-db.js", () => ({
-  closeOpenClawAgentDatabasesAsync: owners.closeAgents,
-}));
-vi.mock("../state/openclaw-state-db.js", () => ({
-  closeOpenClawStateDatabaseByPathAsync: owners.closeShared,
-}));
 vi.mock("./file-lock-manager.js", () => ({
   createFileLockManager: () => ({
     acquire: async (lockPath: string) => ({
@@ -31,11 +26,11 @@ vi.mock("./sqlite-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./sqlite-coordinator.js")>()),
   tryAcquireExclusiveSqliteCoordinator: () => ({ release() {} }),
 }));
-vi.mock("./state-database-coordinator.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./state-database-coordinator.js")>()),
-  acquireGatewayLifecycleCoordinator: () => {
+vi.mock("./state-database-coordinator.js", async (importOriginal) => {
+  const acquireCoordinator = () => {
     let closed = false;
     return {
+      createSchemaFenceDelegate: () => undefined,
       release() {
         if (!closed) {
           closed = true;
@@ -43,8 +38,13 @@ vi.mock("./state-database-coordinator.js", async (importOriginal) => ({
         }
       },
     };
-  },
-}));
+  };
+  return {
+    ...(await importOriginal<typeof import("./state-database-coordinator.js")>()),
+    acquireGatewayLifecycleCoordinator: acquireCoordinator,
+    acquireGatewayMaintenanceCoordinator: acquireCoordinator,
+  };
+});
 
 async function withMaintenanceLock(
   run: (lock: NonNullable<Awaited<ReturnType<typeof acquireGatewayLock>>>) => Promise<void>,
@@ -63,14 +63,26 @@ async function withMaintenanceLock(
     if (!lock) {
       throw new Error("Expected maintenance lock");
     }
-    await run(lock);
+    try {
+      lock.run(() => {
+        const scope = getOpenClawDatabaseMaintenanceScope();
+        if (!scope) {
+          throw new Error("Expected maintenance resource scope");
+        }
+        scope.own({}, "agent-resources", owners.closeAgentResource);
+        scope.own({}, "shared-resources", owners.closeSharedResource);
+      });
+      await run(lock);
+    } finally {
+      await lock.release();
+    }
   });
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
-  owners.closeAgents.mockResolvedValue();
-  owners.closeShared.mockResolvedValue();
+  owners.closeAgentResource.mockResolvedValue();
+  owners.closeSharedResource.mockResolvedValue();
   owners.releaseConfig.mockResolvedValue();
   owners.releaseState.mockResolvedValue();
 });
@@ -79,7 +91,7 @@ describe("maintenance release", () => {
   it("joins concurrent release calls and leaves later resources alone after completion", async () => {
     const started = createDeferred();
     const drained = createDeferred();
-    owners.closeShared.mockImplementation(() => {
+    owners.closeSharedResource.mockImplementation(() => {
       started.resolve();
       return drained.promise;
     });
@@ -91,10 +103,8 @@ describe("maintenance release", () => {
           Promise.all(releases).then(() => "released"),
         ]);
         expect(first).toBe("draining");
-        expect(owners.closeAgents).toHaveBeenCalledExactlyOnceWith(lock.stateDir);
-        expect(owners.closeShared).toHaveBeenCalledExactlyOnceWith(
-          path.join(lock.stateDir, "state", "openclaw.sqlite"),
-        );
+        expect(owners.closeAgentResource).toHaveBeenCalledTimes(1);
+        expect(owners.closeSharedResource).toHaveBeenCalledTimes(1);
         expect(owners.releaseConfig).not.toHaveBeenCalled();
         expect(owners.releaseState).not.toHaveBeenCalled();
         expect(owners.releaseGateway).not.toHaveBeenCalled();
@@ -105,11 +115,15 @@ describe("maintenance release", () => {
       expect(owners.releaseConfig).toHaveBeenCalledTimes(1);
       expect(owners.releaseState).toHaveBeenCalledTimes(1);
       expect(owners.releaseGateway).toHaveBeenCalledTimes(1);
-      owners.closeAgents.mockRejectedValue(new Error("Later agent resources must be untouched"));
-      owners.closeShared.mockRejectedValue(new Error("Later shared resources must be untouched"));
+      owners.closeAgentResource.mockRejectedValue(
+        new Error("Later agent resources must be untouched"),
+      );
+      owners.closeSharedResource.mockRejectedValue(
+        new Error("Later shared resources must be untouched"),
+      );
       await Promise.all([lock.release(), lock.releaseInTree(), lock.release()]);
-      expect(owners.closeAgents).toHaveBeenCalledTimes(1);
-      expect(owners.closeShared).toHaveBeenCalledTimes(1);
+      expect(owners.closeAgentResource).toHaveBeenCalledTimes(1);
+      expect(owners.closeSharedResource).toHaveBeenCalledTimes(1);
       expect(owners.releaseGateway).toHaveBeenCalledTimes(1);
     });
   });
@@ -117,7 +131,8 @@ describe("maintenance release", () => {
   it.each(["shared drain", "config cleanup"] as const)(
     "retains custody after failed %s and retries only unfinished cleanup",
     async (phase) => {
-      const failedOwner = phase === "shared drain" ? owners.closeShared : owners.releaseConfig;
+      const failedOwner =
+        phase === "shared drain" ? owners.closeSharedResource : owners.releaseConfig;
       const failure = new Error("Controlled JavaScript cleanup failure");
       failedOwner.mockRejectedValueOnce(failure);
       await withMaintenanceLock(async (lock) => {
@@ -133,14 +148,14 @@ describe("maintenance release", () => {
         expect(owners.releaseState).not.toHaveBeenCalled();
         expect(owners.releaseGateway).not.toHaveBeenCalled();
         await lock.release();
-        const drainCount = phase === "shared drain" ? 2 : 1;
-        expect(owners.closeAgents).toHaveBeenCalledTimes(drainCount);
-        expect(owners.closeShared).toHaveBeenCalledTimes(drainCount);
+        const sharedCloseCount = phase === "shared drain" ? 2 : 1;
+        expect(owners.closeAgentResource).toHaveBeenCalledTimes(1);
+        expect(owners.closeSharedResource).toHaveBeenCalledTimes(sharedCloseCount);
         expect(owners.releaseConfig).toHaveBeenCalledTimes(phase === "shared drain" ? 1 : 2);
         expect(owners.releaseState).toHaveBeenCalledTimes(1);
         expect(owners.releaseGateway).toHaveBeenCalledTimes(1);
         await lock.release();
-        expect(owners.closeShared).toHaveBeenCalledTimes(drainCount);
+        expect(owners.closeSharedResource).toHaveBeenCalledTimes(sharedCloseCount);
       });
     },
   );

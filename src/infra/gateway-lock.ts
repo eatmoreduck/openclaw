@@ -13,10 +13,7 @@ import { z } from "zod";
 import { resolveConfigPath, resolveGatewayLockDir, resolveStateDir } from "../config/paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
-import {
-  createOpenClawDatabaseMaintenanceScope,
-  type OpenClawDatabaseMaintenanceScope,
-} from "../state/openclaw-state-db-async-lifecycle.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { safeParseJsonWithSchema } from "../utils/zod-parse.js";
 import { acquireWithWait } from "./acquire-with-wait.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
@@ -423,7 +420,7 @@ export async function acquireGatewayLock(
   const deadlineMs = opts.lifecycleDeadlineMs ?? startedAt + timeoutMs;
   let waited = false;
   let stateLifecycle: ReturnType<typeof acquireGatewayLifecycleCoordinator>;
-  let resources: OpenClawDatabaseMaintenanceScope | undefined;
+  let resources: ReturnType<typeof createOpenClawDatabaseMaintenanceScope> | undefined;
   try {
     stateLifecycle = await acquireWithWait({
       deadlineMs,
