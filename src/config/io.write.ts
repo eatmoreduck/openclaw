@@ -3,7 +3,10 @@ import path from "node:path";
 import { err, ok } from "@openclaw/normalization-core/result";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { isVerbose } from "../global-state.js";
-import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
+import {
+  readDeferredPluginMigrations,
+  withDeferredPluginMigrationsCurrent,
+} from "../infra/deferred-plugin-migrations.js";
 import { isVitestRuntimeEnv } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
@@ -533,9 +536,14 @@ export async function writeConfigFileFromContext(
       assertCurrent: options.assertConfigPathForWrite,
     });
     await options.beforeCommit?.();
-    // Candidate staging, backup renames, and guarded publication share one synchronous turn.
-    const result = preparedFile.publish();
-    publication.phase = "published";
+    const result = withDeferredPluginMigrationsCurrent(
+      { env: deps.env, expectedPending: deferredPluginMigrations },
+      () => {
+        const published = preparedFile.publish();
+        publication.phase = "published";
+        return published;
+      },
+    );
     options.assertConfigPathForWrite?.();
     publication.phase = "accepted";
     recordUpdateDoctorConfigWrite(configPath, previousHash, nextHash, snapshot.parsed, json);

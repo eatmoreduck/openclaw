@@ -28,7 +28,7 @@ export class DeferredPluginMigrationConflictError extends Error {
 
   constructor(pending: readonly DeferredPluginMigration[]) {
     super(
-      'Plugin migration obligations changed while Doctor was completing them. Retained inputs remain protected; run "openclaw doctor --fix" after the other repair finishes.',
+      'Plugin migration obligations changed while their inputs were being prepared. Retained inputs remain protected; run "openclaw doctor --fix" after the other repair finishes.',
     );
     this.name = "DeferredPluginMigrationConflictError";
     this.pending = pending;
@@ -110,6 +110,24 @@ export function assertDeferredPluginMigrationsCurrent(params: {
   expectedPending: readonly DeferredPluginMigration[];
 }): void {
   assertPendingGeneration(readDeferredPluginMigrations(params), params.expectedPending);
+}
+
+/** Keep competing obligation writers excluded until synchronous input publication finishes. */
+export function withDeferredPluginMigrationsCurrent<T>(
+  params: { env?: NodeJS.ProcessEnv; expectedPending: readonly DeferredPluginMigration[] },
+  publish: () => T,
+): T {
+  return runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      assertPendingGeneration(
+        pendingMigrationRecords(readMigrationRows(db)),
+        params.expectedPending,
+      );
+      return publish();
+    },
+    { env: params.env },
+    { operationLabel: "state.plugin-migration-input-publication" },
+  );
 }
 
 export function formatDeferredPluginMigration(pending: DeferredPluginMigration): string {

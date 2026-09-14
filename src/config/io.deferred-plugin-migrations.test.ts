@@ -1,11 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { strictlyValidateConfigSnapshotForCli } from "../cli/config-cli-validation.js";
-import { recordDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
+import {
+  DeferredPluginMigrationConflictError,
+  readDeferredPluginMigrations,
+  recordDeferredPluginMigrations,
+} from "../infra/deferred-plugin-migrations.js";
 import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { resolveDeferredPluginMigrationConfigPaths } from "./deferred-plugin-migration-config.js";
 import { createConfigIO } from "./io.factory.js";
 import { readCurrentConfigForPolicyCheck } from "./io.runtime.js";
@@ -23,6 +31,105 @@ describe("config IO with deferred plugin migrations", () => {
       cleanup();
     });
   });
+
+  it.each(["new", "stronger"])(
+    "protects a %s migration obligation recorded after config write planning",
+    async (change) => {
+      const root = tempDirs.make("openclaw-deferred-plugin-publication-");
+      const configPath = path.join(root, "openclaw.json");
+      const env = {
+        ...process.env,
+        OPENCLAW_STATE_DIR: path.join(root, "state"),
+        OPENCLAW_CONFIG_PATH: configPath,
+      };
+      const source = {
+        gateway: { mode: "local", port: 18789 },
+        session: { store: "/srv/synthetic-session-state/sessions.json" },
+      };
+      const original = JSON.stringify(source);
+      fs.writeFileSync(configPath, original);
+      const pending = {
+        pluginId: "sample",
+        reason: "The configured plugin is not installed.",
+        command: "openclaw plugins install @example/sample",
+      };
+      if (change === "stronger") {
+        recordDeferredPluginMigrations({ env, pending: [pending] });
+      }
+      const stronger = { ...pending, configPaths: [["session", "store"]] };
+      const ioOptions = {
+        env,
+        configPath,
+        observe: false,
+        pluginValidation: "skip" as const,
+        shellEnvFallback: "defer" as const,
+      };
+      const io = createConfigIO(ioOptions);
+      const failure = await io
+        .writeConfigFile(
+          { gateway: { mode: "local", port: 18790 } },
+          {
+            auditOrigin: "doctor",
+            skipPluginValidation: true,
+            skipRuntimeSnapshotRefresh: true,
+            beforeCommit: () => {
+              recordDeferredPluginMigrations({ env, pending: [stronger] });
+            },
+          },
+        )
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toHaveProperty(
+        "session.store",
+        source.session.store,
+      );
+      expect(failure).toBeInstanceOf(DeferredPluginMigrationConflictError);
+      expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+      expect(fs.existsSync(`${configPath}.bak`)).toBe(false);
+      expect(readDeferredPluginMigrations({ env })).toEqual([stronger]);
+
+      using contender = new DatabaseSync(openOpenClawStateDatabase({ env }).path);
+      contender.exec("PRAGMA busy_timeout = 0");
+      let publicationChecked = false;
+      const resumedIo = createConfigIO({
+        ...ioOptions,
+        fs: {
+          ...fs,
+          renameSync: (from, to) => {
+            if (to === configPath) {
+              try {
+                expect(() => contender.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
+                publicationChecked = true;
+              } finally {
+                if (contender.isTransaction) {
+                  contender.exec("ROLLBACK");
+                }
+              }
+            }
+            fs.renameSync(from, to);
+          },
+        },
+      });
+      await resumedIo.writeConfigFile(
+        { gateway: { mode: "local", port: 18790 } },
+        {
+          auditOrigin: "doctor",
+          skipPluginValidation: true,
+          skipRuntimeSnapshotRefresh: true,
+          beforeCommit: () => {
+            recordDeferredPluginMigrations({ env, pending: [stronger] });
+          },
+        },
+      );
+      expect(publicationChecked).toBe(true);
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toMatchObject({
+        ...source,
+        gateway: { mode: "local", port: 18790 },
+      });
+    },
+  );
 
   it("serves valid config while preserving pending inputs through repair writes and restart", async () => {
     const root = tempDirs.make("openclaw-deferred-plugin-config-");
