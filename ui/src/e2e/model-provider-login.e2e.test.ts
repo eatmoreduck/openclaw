@@ -96,6 +96,8 @@ suite.define(() => {
         await expect.poll(() => modelPickerValue(primary)).toBe("example/existing");
         await captureProviderProof(`login-models-before-${modelAccess.value}.png`, primary);
         await page.locator("[data-models-connect]").click();
+        expect(await gateway.getRequests("models.authLogin")).toHaveLength(0);
+        await page.locator('[data-models-login-provider="example"]').click();
         const picker = page.locator("[data-models-login-choice]");
         await picker.waitFor();
         expect(await gateway.getRequests("models.authLogin")).toHaveLength(0);
