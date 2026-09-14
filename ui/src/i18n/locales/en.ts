@@ -2471,6 +2471,16 @@ export const en: TranslationMap & {
     retry: "Retry",
   },
   modelSetup: {
+    discovery: {
+      title: "On this Gateway",
+      description:
+        "Find existing connections or prepare a local model for {agent}. Using a model here changes this agent, not the global defaults.",
+      useForAgent: "Test & use for this agent",
+      connectForAgent: "Connect & use for this agent",
+      connectProvider: "Connect provider",
+      returnToModels: "Return to Models",
+      otherSoftware: "Other detected software",
+    },
     missingAuth: "No provider credential is configured for this model. Set it up in Model Setup.",
     commandHint: "Try /models or /help.",
     heading: "Connect a verified AI model",
