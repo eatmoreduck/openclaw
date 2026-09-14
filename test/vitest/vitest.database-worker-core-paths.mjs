@@ -47,6 +47,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/acp/runtime/session-meta-doctor.test.ts",
   "src/agents/agent-tools.at-prefixed-remote-paths.test.ts",
   "src/agents/agent-tools.create-openclaw-coding-tools.test.ts",
+  "src/agents/bash-tools.notify-on-exit-ack.test.ts",
   "src/agents/memory-write-provenance.test.ts",
   "src/agents/prepared-model-runtime.run-resources.test.ts",
   "src/agents/sessions/sdk.auth-migration.test.ts",
@@ -78,6 +79,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-state/plugin-state-store.runtime.test.ts",
   "src/plugin-state/plugin-state-store.schema.test.ts",
   "src/plugin-state/plugin-state-worker.test.ts",
+  "src/agents/tools/cron-tool.output-contract.test.ts",
+  "src/plugins/services.cron.test.ts",
+  "src/state/creator-namespace-migration.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
