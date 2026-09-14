@@ -8,6 +8,10 @@ import {
 } from "./install-root-context.js";
 import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 
+function parseBundledDiscoveryMode(value: unknown): "compat" | "allowlist" | undefined {
+  return value === "compat" || value === "allowlist" ? value : undefined;
+}
+
 export function readBundledDiscoveryMode(
   options: OpenClawStateDatabaseOptions = {},
   behavior: { artifactPreservingReadOnly?: boolean } = {},
@@ -27,7 +31,7 @@ export function readBundledDiscoveryMode(
     resolvedOptions,
     behavior,
   );
-  return value === "compat" || value === "allowlist" ? value : undefined;
+  return parseBundledDiscoveryMode(value);
 }
 
 // Single-slot process memo keyed by the resolved state-database path: the mode
@@ -58,6 +62,7 @@ function resolveBundledDiscoveryMemoKey(env: NodeJS.ProcessEnv): string {
 export function readBundledDiscoveryModeMemoized(
   env: NodeJS.ProcessEnv = process.env,
   behavior: { artifactPreservingReadOnly?: boolean } = {},
+  readPreparedValue?: (databasePath: string) => unknown,
 ): "compat" | "allowlist" | undefined {
   if (behavior.artifactPreservingReadOnly) {
     // Copied-state planning binds the observed bytes, not process-stable runtime metadata.
@@ -68,7 +73,9 @@ export function readBundledDiscoveryModeMemoized(
   if (memoizedBundledDiscoveryMode?.key !== key) {
     memoizedBundledDiscoveryMode = {
       key,
-      value: readBundledDiscoveryMode(env === process.env ? {} : { env }),
+      value: readPreparedValue
+        ? parseBundledDiscoveryMode(readPreparedValue(key))
+        : readBundledDiscoveryMode(env === process.env ? {} : { env }),
     };
   }
   return memoizedBundledDiscoveryMode.value;

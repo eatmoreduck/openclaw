@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { formatErrorMessage } from "../infra/errors.js";
 import { findStartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
-import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import {
+  withArtifactPreservingStateReads,
+  withSynchronousArtifactPreservingStateSnapshot,
+} from "../state/openclaw-state-db-readonly.js";
 import {
   includeContributionOwnsAgentRoster,
   includeContributionOwnsBindings,
@@ -246,16 +249,23 @@ export async function readConfigFileSnapshotInternal(
       env: deps.env,
       allowCurrentPluginMetadata: options.allowCurrentPluginMetadata,
     });
-    const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
-    const validated = await deps.measure("config.snapshot.read.validate", () =>
-      validateConfigObjectWithPlugins(validationConfigRaw, {
-        ...pathResolution,
-        pluginValidation: context.options.pluginValidation,
-        loadPluginMetadataSnapshot: pluginMetadata.load,
-        sourceRaw: effectiveParsed,
-        preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
-        deferredPluginMigrations,
-      }),
+    const { deferredPluginMigrations, validated } = await deps.measure(
+      "config.snapshot.read.validate",
+      () =>
+        withSynchronousArtifactPreservingStateSnapshot(() => {
+          const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
+          return {
+            deferredPluginMigrations,
+            validated: validateConfigObjectWithPlugins(validationConfigRaw, {
+              ...pathResolution,
+              pluginValidation: context.options.pluginValidation,
+              loadPluginMetadataSnapshot: pluginMetadata.load,
+              sourceRaw: effectiveParsed,
+              preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
+              deferredPluginMigrations,
+            }),
+          };
+        }),
     );
     if (!validated.ok) {
       const availableSnapshot = pluginMetadata.getSnapshot();

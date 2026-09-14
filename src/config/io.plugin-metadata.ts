@@ -1,6 +1,7 @@
 import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-record-reader.js";
+import { preparePluginMetadataMachineState } from "../plugins/installed-plugin-index-record-state.js";
 import {
   loadPluginManifestRegistryCore,
   type PluginManifestRegistry,
@@ -16,6 +17,7 @@ import {
   type PluginMetadataSnapshot,
 } from "../plugins/plugin-metadata-snapshot.js";
 import { normalizePluginPolicyId } from "../plugins/plugin-policy-id.js";
+import { withSynchronousArtifactPreservingStateSnapshot } from "../state/openclaw-state-db-readonly.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 import type { PluginInstallRecord } from "./types.plugins.js";
 
@@ -101,7 +103,18 @@ export function resolveConfigWidePluginMetadataSnapshot(
       return gatewaySnapshot;
     }
   }
+  return withSynchronousArtifactPreservingStateSnapshot(() =>
+    resolveConfigWidePluginMetadataSnapshotInScope(params),
+  );
+}
+
+function resolveConfigWidePluginMetadataSnapshotInScope(
+  params: ResolveConfigWidePluginMetadataParams,
+): PluginMetadataSnapshot {
   const env = params.env ?? process.env;
+  if (params.installRecords === undefined) {
+    preparePluginMetadataMachineState({ env, stateDir: params.stateDir });
+  }
   const dirs = listAgentWorkspaceDirs(params.config, env);
   const workspaceDirs: Array<string | undefined> = dirs.length ? dirs : [undefined];
   const cache = getPluginCache();

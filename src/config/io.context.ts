@@ -14,6 +14,7 @@ import {
 } from "../infra/shell-env.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { withSynchronousArtifactPreservingStateSnapshot } from "../state/openclaw-state-db-readonly.js";
 import { DuplicateAgentDirError, findDuplicateAgentDirs } from "./agent-dirs.js";
 import { applyConfigEnvVars, cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { preserveDeferredPluginMigrationConfig } from "./deferred-plugin-migration-config.js";
@@ -213,38 +214,45 @@ export function createConfigIoContext(options: ConfigIoFactoryOptions = {}): Con
       }
       // Recovery is a migration boundary, not runtime compatibility: the canonical Doctor
       // registry owns historical shapes before current-schema validation and any disk write.
-      const deferredPluginMigrations = resolveDeferredPluginMigrations();
-      const migrated = applyLegacyDoctorMigrations(candidate.parsed, {
-        authoredRaw: candidate.parsed,
-        resolvedRaw: originalResolution.resolvedConfigRaw,
-      });
-      const authoredCandidate = migrated.next
-        ? preserveDeferredPluginMigrationConfig({
-            sourceConfig: candidate.parsed,
-            nextConfig: migrated.next,
-            pending: deferredPluginMigrations,
-          })
-        : candidate.parsed;
-      const candidateEnv = cloneEnvWithPlatformSemantics(deps.env);
-      const resolved = resolveConfigIncludesForRead(authoredCandidate, configPath, {
-        ...deps,
-        env: candidateEnv,
-      });
-      const resolution = resolveConfigForRead(resolved, candidateEnv, deps.lowerPrecedenceEnv);
-      const effectiveConfigRaw = resolution.resolvedConfigRaw;
-      const pluginMetadata = createValidationPluginMetadataSnapshotLoader({
-        effectiveConfigRaw,
-        env: candidateEnv,
-      });
-      const validated = validateConfigObjectWithPlugins(effectiveConfigRaw, {
-        ...pathResolution,
-        env: candidateEnv,
-        pluginValidation: options.pluginValidation,
-        loadPluginMetadataSnapshot: pluginMetadata.load,
-        sourceRaw: authoredCandidate,
-        preservedLegacyRootKeys: options.preservedLegacyRootKeys,
-        deferredPluginMigrations,
-      });
+      const { migrated, authoredCandidate, validated } =
+        withSynchronousArtifactPreservingStateSnapshot(() => {
+          const deferredPluginMigrations = resolveDeferredPluginMigrations();
+          const migrated = applyLegacyDoctorMigrations(candidate.parsed, {
+            authoredRaw: candidate.parsed,
+            resolvedRaw: originalResolution.resolvedConfigRaw,
+          });
+          const authoredCandidate = migrated.next
+            ? preserveDeferredPluginMigrationConfig({
+                sourceConfig: candidate.parsed,
+                nextConfig: migrated.next,
+                pending: deferredPluginMigrations,
+              })
+            : candidate.parsed;
+          const candidateEnv = cloneEnvWithPlatformSemantics(deps.env);
+          const resolved = resolveConfigIncludesForRead(authoredCandidate, configPath, {
+            ...deps,
+            env: candidateEnv,
+          });
+          const resolution = resolveConfigForRead(resolved, candidateEnv, deps.lowerPrecedenceEnv);
+          const effectiveConfigRaw = resolution.resolvedConfigRaw;
+          const pluginMetadata = createValidationPluginMetadataSnapshotLoader({
+            effectiveConfigRaw,
+            env: candidateEnv,
+          });
+          return {
+            migrated,
+            authoredCandidate,
+            validated: validateConfigObjectWithPlugins(effectiveConfigRaw, {
+              ...pathResolution,
+              env: candidateEnv,
+              pluginValidation: options.pluginValidation,
+              loadPluginMetadataSnapshot: pluginMetadata.load,
+              sourceRaw: authoredCandidate,
+              preservedLegacyRootKeys: options.preservedLegacyRootKeys,
+              deferredPluginMigrations,
+            }),
+          };
+        });
       if (!validated.ok) {
         const issueSummary = formatConfigIssueSummary(validated.issues.slice(0, 3)) ?? "";
         const detail = issueSummary.length > 800 ? `${issueSummary.slice(0, 799)}…` : issueSummary;

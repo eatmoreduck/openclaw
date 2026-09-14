@@ -1,4 +1,5 @@
 import { formatErrorMessage } from "../infra/errors.js";
+import { withSynchronousArtifactPreservingStateSnapshot } from "../state/openclaw-state-db-readonly.js";
 import { DuplicateAgentDirError, findDuplicateAgentDirs } from "./agent-dirs.js";
 import type { ConfigIoContext } from "./io.context.js";
 import { throwInvalidConfig } from "./io.invalid-config.js";
@@ -101,15 +102,22 @@ export function loadConfigFromContext(
       effectiveConfigRaw,
       env: deps.env,
     });
-    const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
-    const validated = validateConfigObjectWithPlugins(validationConfigRaw, {
-      ...pathResolution,
-      pluginValidation: context.options.pluginValidation,
-      loadPluginMetadataSnapshot: pluginMetadata.load,
-      sourceRaw: snapshotParsed,
-      preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
-      deferredPluginMigrations,
-    });
+    const { deferredPluginMigrations, validated } = withSynchronousArtifactPreservingStateSnapshot(
+      () => {
+        const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
+        return {
+          deferredPluginMigrations,
+          validated: validateConfigObjectWithPlugins(validationConfigRaw, {
+            ...pathResolution,
+            pluginValidation: context.options.pluginValidation,
+            loadPluginMetadataSnapshot: pluginMetadata.load,
+            sourceRaw: snapshotParsed,
+            preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
+            deferredPluginMigrations,
+          }),
+        };
+      },
+    );
     if (!validated.ok) {
       context.observeLoadConfigSnapshot(
         createConfigFileSnapshot({
