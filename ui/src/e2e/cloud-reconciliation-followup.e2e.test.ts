@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import type { ApplicationContext } from "../app/context.ts";
 import {
   captureUiProofEnabled,
   chatSessionListResponse,
@@ -227,7 +228,21 @@ suite.define(() => {
           });
         }
 
+        const completedUpdatedAt = await page.evaluate(async (key) => {
+          const app = document.querySelector("openclaw-app") as HTMLElement & {
+            runtime?: { context: ApplicationContext };
+          };
+          const sessions = app.runtime?.context.sessions;
+          if (!sessions) {
+            throw new Error("session capability unavailable");
+          }
+          await sessions.refresh({ agentId: "main", force: true });
+          return sessions.state.result?.sessions.find((row) => row.key === key)?.updatedAt;
+        }, sessionKey);
+        expect(completedUpdatedAt).toBeGreaterThan(active.updatedAt);
+
         const failed = session("failed");
+        expect(completedUpdatedAt).toBeLessThanOrEqual(failed.updatedAt);
         const failedHistory = { ...activeHistory, sessionInfo: failed };
         await gateway.setMethodResponse("chat.history", failedHistory);
         await gateway.setMethodResponse("chat.startup", failedHistory);
