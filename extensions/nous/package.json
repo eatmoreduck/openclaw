@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/nous-provider",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "OpenClaw Nous Portal model provider plugin",
+  "type": "module",
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}

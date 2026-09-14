@@ -1,0 +1,29 @@
+{
+  "id": "nous",
+  "name": "Nous Portal",
+  "description": "Nous Portal model access with device sign-in.",
+  "categories": ["models"],
+  "activation": { "onStartup": false },
+  "enabledByDefault": true,
+  "providers": ["nous"],
+  "modelCatalog": { "discovery": { "nous": "refreshable" } },
+  "setup": { "providers": [{ "id": "nous", "envVars": [] }] },
+  "providerAuthChoices": [
+    {
+      "provider": "nous",
+      "method": "device",
+      "personalAccount": true,
+      "choiceId": "nous",
+      "choiceLabel": "Nous Portal",
+      "choiceHint": "Sign in with a Nous Portal account",
+      "groupId": "nous",
+      "groupLabel": "Nous Portal",
+      "groupHint": "Device sign-in",
+      "appGuidedAuth": "device-code",
+      "credentialOnly": true,
+      "channelLogin": {},
+      "website": "https://portal.nousresearch.com"
+    }
+  ],
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}

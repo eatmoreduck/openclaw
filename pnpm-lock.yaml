@@ -1650,6 +1650,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/nous:
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+
   extensions/novita:
     devDependencies:
       '@openclaw/plugin-sdk':
