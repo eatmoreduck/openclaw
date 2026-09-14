@@ -253,16 +253,16 @@ export async function readConfigFileSnapshotInternal(
       "config.snapshot.read.validate",
       () =>
         withSynchronousArtifactPreservingStateSnapshot(() => {
-          const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
+          const pending = context.resolveDeferredPluginMigrations();
           return {
-            deferredPluginMigrations,
+            deferredPluginMigrations: pending,
             validated: validateConfigObjectWithPlugins(validationConfigRaw, {
               ...pathResolution,
               pluginValidation: context.options.pluginValidation,
               loadPluginMetadataSnapshot: pluginMetadata.load,
               sourceRaw: effectiveParsed,
               preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
-              deferredPluginMigrations,
+              deferredPluginMigrations: pending,
             }),
           };
         }),

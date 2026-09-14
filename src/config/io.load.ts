@@ -104,16 +104,16 @@ export function loadConfigFromContext(
     });
     const { deferredPluginMigrations, validated } = withSynchronousArtifactPreservingStateSnapshot(
       () => {
-        const deferredPluginMigrations = context.resolveDeferredPluginMigrations();
+        const pending = context.resolveDeferredPluginMigrations();
         return {
-          deferredPluginMigrations,
+          deferredPluginMigrations: pending,
           validated: validateConfigObjectWithPlugins(validationConfigRaw, {
             ...pathResolution,
             pluginValidation: context.options.pluginValidation,
             loadPluginMetadataSnapshot: pluginMetadata.load,
             sourceRaw: snapshotParsed,
             preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
-            deferredPluginMigrations,
+            deferredPluginMigrations: pending,
           }),
         };
       },

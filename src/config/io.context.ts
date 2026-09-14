@@ -214,45 +214,48 @@ export function createConfigIoContext(options: ConfigIoFactoryOptions = {}): Con
       }
       // Recovery is a migration boundary, not runtime compatibility: the canonical Doctor
       // registry owns historical shapes before current-schema validation and any disk write.
-      const { migrated, authoredCandidate, validated } =
-        withSynchronousArtifactPreservingStateSnapshot(() => {
-          const deferredPluginMigrations = resolveDeferredPluginMigrations();
-          const migrated = applyLegacyDoctorMigrations(candidate.parsed, {
-            authoredRaw: candidate.parsed,
-            resolvedRaw: originalResolution.resolvedConfigRaw,
-          });
-          const authoredCandidate = migrated.next
-            ? preserveDeferredPluginMigrationConfig({
-                sourceConfig: candidate.parsed,
-                nextConfig: migrated.next,
-                pending: deferredPluginMigrations,
-              })
-            : candidate.parsed;
-          const candidateEnv = cloneEnvWithPlatformSemantics(deps.env);
-          const resolved = resolveConfigIncludesForRead(authoredCandidate, configPath, {
-            ...deps,
-            env: candidateEnv,
-          });
-          const resolution = resolveConfigForRead(resolved, candidateEnv, deps.lowerPrecedenceEnv);
-          const effectiveConfigRaw = resolution.resolvedConfigRaw;
-          const pluginMetadata = createValidationPluginMetadataSnapshotLoader({
-            effectiveConfigRaw,
-            env: candidateEnv,
-          });
-          return {
-            migrated,
-            authoredCandidate,
-            validated: validateConfigObjectWithPlugins(effectiveConfigRaw, {
-              ...pathResolution,
-              env: candidateEnv,
-              pluginValidation: options.pluginValidation,
-              loadPluginMetadataSnapshot: pluginMetadata.load,
-              sourceRaw: authoredCandidate,
-              preservedLegacyRootKeys: options.preservedLegacyRootKeys,
-              deferredPluginMigrations,
-            }),
-          };
+      const {
+        migrated: legacyMigration,
+        authoredCandidate: preparedRawConfig,
+        validated,
+      } = withSynchronousArtifactPreservingStateSnapshot(() => {
+        const deferredPluginMigrations = resolveDeferredPluginMigrations();
+        const migrated = applyLegacyDoctorMigrations(candidate.parsed, {
+          authoredRaw: candidate.parsed,
+          resolvedRaw: originalResolution.resolvedConfigRaw,
         });
+        const authoredCandidate = migrated.next
+          ? preserveDeferredPluginMigrationConfig({
+              sourceConfig: candidate.parsed,
+              nextConfig: migrated.next,
+              pending: deferredPluginMigrations,
+            })
+          : candidate.parsed;
+        const candidateEnv = cloneEnvWithPlatformSemantics(deps.env);
+        const resolved = resolveConfigIncludesForRead(authoredCandidate, configPath, {
+          ...deps,
+          env: candidateEnv,
+        });
+        const resolution = resolveConfigForRead(resolved, candidateEnv, deps.lowerPrecedenceEnv);
+        const effectiveConfigRaw = resolution.resolvedConfigRaw;
+        const pluginMetadata = createValidationPluginMetadataSnapshotLoader({
+          effectiveConfigRaw,
+          env: candidateEnv,
+        });
+        return {
+          migrated,
+          authoredCandidate,
+          validated: validateConfigObjectWithPlugins(effectiveConfigRaw, {
+            ...pathResolution,
+            env: candidateEnv,
+            pluginValidation: options.pluginValidation,
+            loadPluginMetadataSnapshot: pluginMetadata.load,
+            sourceRaw: authoredCandidate,
+            preservedLegacyRootKeys: options.preservedLegacyRootKeys,
+            deferredPluginMigrations,
+          }),
+        };
+      });
       if (!validated.ok) {
         const issueSummary = formatConfigIssueSummary(validated.issues.slice(0, 3)) ?? "";
         const detail = issueSummary.length > 800 ? `${issueSummary.slice(0, 799)}…` : issueSummary;
@@ -265,9 +268,9 @@ export function createConfigIoContext(options: ConfigIoFactoryOptions = {}): Con
         ok: true,
         candidate: {
           config: validated.config,
-          parsed: authoredCandidate,
-          raw: migrated.next
-            ? JSON.stringify(authoredCandidate, null, 2).trimEnd().concat("\n")
+          parsed: preparedRawConfig,
+          raw: legacyMigration.next
+            ? JSON.stringify(preparedRawConfig, null, 2).trimEnd().concat("\n")
             : candidate.raw,
         },
       };
