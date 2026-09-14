@@ -184,7 +184,12 @@ describe("canvas pnpm runner", () => {
           resolvePnpmRunner({ npmExecPath: cmdPath, pnpmArgs: ["unsafe&argument"] }),
         ).toThrow(/unsafe/);
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        rmSync(tempDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 20,
+        });
       }
     },
   );
@@ -213,7 +218,12 @@ describe("canvas pnpm runner", () => {
         expect(result.status, result.stderr).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual(expected);
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        rmSync(tempDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 20,
+        });
       }
     },
   );
