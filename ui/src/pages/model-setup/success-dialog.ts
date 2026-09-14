@@ -7,7 +7,10 @@ import {
   renderProviderBrandIcon,
 } from "../../components/provider-icon.ts";
 import { t } from "../../i18n/index.ts";
+import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import type { ModelSetupActivationState } from "./state.ts";
+
+registerSettingsEnglish();
 
 export function renderModelSetupSuccessDialog(
   activation: Extract<ModelSetupActivationState, { phase: "success" }>,

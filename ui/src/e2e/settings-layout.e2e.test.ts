@@ -234,7 +234,10 @@ suite.define(() => {
         const failedScripts: string[] = [];
         const startupScripts: string[] = [];
         const settingsScripts: string[] = [];
-        const providerCopy = "Global model defaults and provider access for your agents.";
+        const settingsOnlyCopy = [
+          "Global model defaults and provider access for your agents.",
+          "Find existing connections or prepare a local model for {agent}.",
+        ];
         // Keep each cold-boot document alive through the final assertions: replacing
         // an observed document cancels its idle imports and creates test-owned failures.
         for (const pathname of ["new", "chat", "settings/model-providers"]) {
@@ -273,12 +276,16 @@ suite.define(() => {
             : page.locator(".agent-chat__composer-combobox textarea");
           await ready.waitFor();
           if (isSettings) {
-            expect(settingsScripts.join("\n")).toContain(providerCopy);
+            for (const copy of settingsOnlyCopy) {
+              expect(settingsScripts.join("\n")).toContain(copy);
+            }
             expect(await page.locator(".model-providers__defaults").textContent()).toContain(
               "Utility Model",
             );
           } else {
-            expect(startupScripts.join("\n")).not.toContain(providerCopy);
+            for (const copy of settingsOnlyCopy) {
+              expect(startupScripts.join("\n")).not.toContain(copy);
+            }
           }
           if (recordVisuals) {
             await page.screenshot({
@@ -287,7 +294,9 @@ suite.define(() => {
             });
           }
         }
-        expect(startupScripts.join("\n")).not.toContain(providerCopy);
+        for (const copy of settingsOnlyCopy) {
+          expect(startupScripts.join("\n")).not.toContain(copy);
+        }
         expect(errors).toEqual([]);
         expect(failedScripts).toEqual([]);
       },

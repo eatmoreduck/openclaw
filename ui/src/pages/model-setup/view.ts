@@ -6,6 +6,7 @@ import { icons } from "../../components/icons.ts";
 import { renderLearnMoreLink } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
+import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
 import "../../styles/model-setup.css";
 import { renderModelSetupFailure, renderConfiguredModel } from "./configured-model.ts";
@@ -22,6 +23,8 @@ import type {
 import { activationTargetId } from "./state.ts";
 import { renderModelSetupSuccessDialog } from "./success-dialog.ts";
 import { renderModelSetupWizard } from "./wizard-view.ts";
+
+registerSettingsEnglish();
 
 const MODEL_SETUP_DOCS_URL = "https://docs.openclaw.ai/concepts/model-providers";
 
@@ -475,16 +478,14 @@ function renderManual(props: ModelSetupViewProps, detected: SystemAgentSetupDete
 }
 
 export function revealModelSetupFeedback(root: ParentNode): void {
-  // Immediate scrolling reveals the current attempt without moving focus or
-  // scheduling work that could outlive this route. Unrelated renders do not call this.
+  // Reveal only this attempt synchronously; never move focus or leave work past route exit.
   root
     .querySelector(".model-setup > .model-setup__testing, .model-setup > .model-setup__failure")
     ?.scrollIntoView?.({ block: "nearest", behavior: "auto" });
 }
 
 function renderActivationFeedback(activation: ModelSetupActivationState) {
-  // Preparation can activate an undiscovered model. Feedback belongs to the
-  // attempt, not a candidate row or the current manual-provider selection.
+  // Feedback follows the activation attempt, including prepared models absent from discovery.
   if (activation.phase === "testing") {
     return html`<div class="model-setup__testing" role="status">${t("modelSetup.testing")}</div>`;
   }
@@ -689,11 +690,8 @@ export function renderModelSetup(props: ModelSetupViewProps): TemplateResult {
           : html`<openclaw-modal-dialog
               label=${t("modelSetup.discovery.title")}
               @modal-cancel=${() => props.onClose?.()}
-              @wa-after-show=${(event: Event) => {
-                if (event.target === event.currentTarget) {
-                  props.onDiscoveryShown?.();
-                }
-              }}
+              @wa-after-show=${(event: Event) =>
+                event.target === event.currentTarget ? props.onDiscoveryShown?.() : undefined}
             >
               <div class="model-setup-wizard model-setup-discovery">
                 <div class="model-setup-wizard__body">${content}</div>

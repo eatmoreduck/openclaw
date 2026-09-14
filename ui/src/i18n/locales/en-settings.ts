@@ -3,6 +3,18 @@ import { en } from "./en.ts";
 
 // Settings copy loads with its lazy page or search, not the startup shell.
 const enSettings = {
+  modelSetup: {
+    discovery: {
+      title: "On this Gateway",
+      description:
+        "Find existing connections or prepare a local model for {agent}. Using a model here changes this agent, not the global defaults.",
+      useForAgent: "Test & use for this agent",
+      connectForAgent: "Connect & use for this agent",
+      connectProvider: "Connect provider",
+      returnToModels: "Return to Models",
+      otherSoftware: "Other detected software",
+    },
+  },
   connection: {
     ping: {
       title: "Gateway ping",
@@ -1328,6 +1340,7 @@ export const registerSettingsEnglish = Object.assign(
   () => {
     en.memoryPage = enSettings.memoryPage;
     en.modelProviders = enSettings.modelProviders;
+    Object.assign(en.modelSetup, enSettings.modelSetup);
     // Extend the shared objects: eager save/update copy and existing readers survive.
     en.cloudWorkersPage = enSettings.cloudWorkersPage;
     Object.assign(en.connection, enSettings.connection);
