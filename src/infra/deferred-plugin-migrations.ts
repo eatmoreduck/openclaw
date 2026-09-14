@@ -114,15 +114,21 @@ export function assertDeferredPluginMigrationsCurrent(params: {
 
 /** Keep competing obligation writers excluded until synchronous input publication finishes. */
 export function withDeferredPluginMigrationsCurrent<T>(
-  params: { env?: NodeJS.ProcessEnv; expectedPending: readonly DeferredPluginMigration[] },
+  params: {
+    env?: NodeJS.ProcessEnv;
+    expectedPending: readonly DeferredPluginMigration[];
+    onConflict?: (pending: readonly DeferredPluginMigration[]) => T;
+  },
   publish: () => T,
 ): T {
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
-      assertPendingGeneration(
-        pendingMigrationRecords(readMigrationRows(db)),
-        params.expectedPending,
-      );
+      const pending = pendingMigrationRecords(readMigrationRows(db));
+      if (!isDeepStrictEqual(pending, params.expectedPending) && params.onConflict) {
+        // Commit preservation facts against these rows; callers refuse publication after return.
+        return params.onConflict(pending);
+      }
+      assertPendingGeneration(pending, params.expectedPending);
       return publish();
     },
     { env: params.env },

@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
 import {
   readDeferredPluginMigrations,
+  withDeferredPluginMigrationsCurrent,
   type DeferredPluginMigration,
 } from "../infra/deferred-plugin-migrations.js";
 import { formatErrorMessage, isMissingPathError } from "../infra/errors.js";
@@ -662,6 +663,8 @@ async function rollbackJsonFileWriteIfUnchanged(params: {
 }
 
 async function writeRootBoundJsonFile(params: {
+  env: NodeJS.ProcessEnv;
+  deferredPluginMigrations: readonly DeferredPluginMigration[];
   configPath: string;
   includePath: string;
   allowedRoots: readonly string[];
@@ -733,8 +736,13 @@ async function writeRootBoundJsonFile(params: {
       destinationHardlinks: "reject",
       durable: true,
     });
-    preparedFile.publish();
-    publication.phase = "published";
+    withDeferredPluginMigrationsCurrent(
+      { env: params.env, expectedPending: params.deferredPluginMigrations },
+      () => {
+        preparedFile.publish();
+        publication.phase = "published";
+      },
+    );
     await params.assertIncludeGraphForWrite(hashConfigIncludeRaw(content));
     params.assertConfigPathForWrite();
   } catch (error) {
@@ -953,6 +961,8 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
           includeHash,
         });
       const pathProof = await writeRootBoundJsonFile({
+        env: writeEnv,
+        deferredPluginMigrations: params.deferredPluginMigrations,
         configPath: params.snapshot.path,
         includePath,
         allowedRoots,

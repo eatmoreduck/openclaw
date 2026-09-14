@@ -19,6 +19,7 @@ import { createConfigIO } from "./io.factory.js";
 import { readCurrentConfigForPolicyCheck } from "./io.runtime.js";
 import { resolveSessionStoreCompatibilityAgentId } from "./legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
+import { replaceConfigFile } from "./mutate.js";
 import {
   validateConfigObjectRawWithPlugins,
   validateConfigObjectWithPlugins,
@@ -130,6 +131,84 @@ describe("config IO with deferred plugin migrations", () => {
       });
     },
   );
+
+  it("protects include-owned inputs claimed after mutation planning", async () => {
+    const root = tempDirs.make("openclaw-deferred-plugin-include-");
+    const configPath = path.join(root, "openclaw.json");
+    const includePath = path.join(root, "session.json");
+    const env = {
+      ...process.env,
+      OPENCLAW_STATE_DIR: path.join(root, "state"),
+      OPENCLAW_CONFIG_PATH: configPath,
+    };
+    const rootRaw = JSON.stringify({
+      gateway: { mode: "local" },
+      session: { $include: "./session.json" },
+    });
+    const included = { store: "/srv/synthetic-session-state/sessions.json", dmScope: "main" };
+    const includeRaw = JSON.stringify(included);
+    fs.writeFileSync(configPath, rootRaw);
+    fs.writeFileSync(includePath, includeRaw);
+    const pending = {
+      pluginId: "sample",
+      reason: "The configured plugin is not installed.",
+      command: "openclaw plugins install @example/sample",
+    };
+    recordDeferredPluginMigrations({ env, pending: [pending] });
+    const stronger = { ...pending, configPaths: [["session", "store"]] };
+    const io = createConfigIO({
+      env,
+      configPath,
+      observe: false,
+      pluginValidation: "skip",
+      shellEnvFallback: "defer",
+    });
+    const prepared = await io.readConfigFileSnapshotForWrite();
+    const failure = await replaceConfigFile({
+      ...prepared,
+      io,
+      sourceConfig: { ...prepared.snapshot.sourceConfig, session: { dmScope: "per-peer" } },
+      writeOptions: {
+        ...prepared.writeOptions,
+        auditOrigin: "doctor",
+        skipPluginValidation: true,
+        skipRuntimeSnapshotRefresh: true,
+        preCommitRuntimePreflight: async () => {
+          recordDeferredPluginMigrations({ env, pending: [stronger] });
+        },
+      },
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(JSON.parse(fs.readFileSync(includePath, "utf8"))).toHaveProperty(
+      "store",
+      included.store,
+    );
+    expect(failure).toBeInstanceOf(DeferredPluginMigrationConflictError);
+    expect(fs.readFileSync(includePath, "utf8")).toBe(includeRaw);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(rootRaw);
+    expect(fs.existsSync(`${includePath}.bak`)).toBe(false);
+    expect(readDeferredPluginMigrations({ env })).toEqual([stronger]);
+
+    const refreshed = await io.readConfigFileSnapshotForWrite();
+    await replaceConfigFile({
+      ...refreshed,
+      io,
+      sourceConfig: { ...refreshed.snapshot.sourceConfig, session: { dmScope: "per-peer" } },
+      writeOptions: {
+        ...refreshed.writeOptions,
+        auditOrigin: "doctor",
+        skipPluginValidation: true,
+        skipRuntimeSnapshotRefresh: true,
+      },
+    });
+    expect(JSON.parse(fs.readFileSync(includePath, "utf8"))).toEqual({
+      ...included,
+      dmScope: "per-peer",
+    });
+    expect(fs.readFileSync(configPath, "utf8")).toBe(rootRaw);
+  });
 
   it("serves valid config while preserving pending inputs through repair writes and restart", async () => {
     const root = tempDirs.make("openclaw-deferred-plugin-config-");

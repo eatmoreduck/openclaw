@@ -314,9 +314,12 @@ async function noteSessionSqliteMigrationHealth(params: {
               ) => {
                 const { settleRetainedDoctorSessionSources } =
                   await import("./doctor-session-sqlite.js");
-                await settleRetainedDoctorSessionSources(report, completedPluginIds, {
+                await settleRetainedDoctorSessionSources(
+                  report,
+                  completedPluginIds,
+                  maintenanceAuthority,
                   assertCurrent,
-                });
+                );
               },
             }
           : {}),

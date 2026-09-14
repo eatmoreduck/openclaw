@@ -111,6 +111,16 @@ function sourceIsArchived(
   return false;
 }
 
+function matchesVerifiedSessionSource(
+  source: DeferredPluginSessionImport["sources"][number],
+  target: SessionImportTarget,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return fs.existsSync(source.path)
+    ? sameMigrationArtifact(readMigrationArtifactIdentity(source.path), source.identity)
+    : sourceIsArchived(source, target, env);
+}
+
 /** A completed core import remains authoritative after canonical sessions change or are deleted. */
 export function readDeferredPluginSessionImport(params: {
   target: SessionImportTarget;
@@ -133,10 +143,7 @@ export function readDeferredPluginSessionImport(params: {
     );
   }
   for (const source of recorded.sources) {
-    const matches = fs.existsSync(source.path)
-      ? sameMigrationArtifact(readMigrationArtifactIdentity(source.path), source.identity)
-      : sourceIsArchived(source, params.target, params.env);
-    if (!matches) {
+    if (!matchesVerifiedSessionSource(source, params.target, params.env)) {
       throw new Error(
         `Retained session migration source changed: ${source.path}. Resolve the source conflict before running openclaw doctor --fix again; the verified import was not replayed.`,
       );
@@ -167,7 +174,7 @@ export function recordDeferredPluginSessionImport(params: {
   runOpenClawStateWriteTransaction(
     ({ db }) => {
       for (const source of params.sources) {
-        if (!sameMigrationArtifact(readMigrationArtifactIdentity(source.path), source.identity)) {
+        if (!matchesVerifiedSessionSource(source, params.target, params.env)) {
           throw new Error(
             "Session migration source changed before its import receipt was recorded.",
           );

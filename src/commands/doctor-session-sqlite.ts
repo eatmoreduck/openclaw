@@ -22,7 +22,12 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredSessionOwnerAgentId } from "../gateway/session-store-key.js";
 import { readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
-import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
+import {
+  DeferredPluginMigrationConflictError,
+  readDeferredPluginMigrations,
+  withDeferredPluginMigrationsCurrent,
+  type DeferredPluginMigration,
+} from "../infra/deferred-plugin-migrations.js";
 import {
   deferredPluginSessionStoreIds,
   readDeferredPluginSessionImport,
@@ -114,6 +119,7 @@ type LegacyArchiveTarget = {
   records: Array<Omit<LegacySessionRecord, "entry"> & { sessionId: string }>;
   deferredPluginIds: string[];
   retainedImportVerified: boolean;
+  verifiedSources?: DeferredPluginSessionImport["sources"];
 };
 
 const retainedArchivePlans = new WeakMap<
@@ -207,27 +213,91 @@ export async function runDoctorSessionSqlite(
   }
   if (activeRun && coverage) {
     const deferredSourcePaths = new Set<string>();
-    for (const owner of archiveTargets) {
-      if (owner.deferredPluginIds.length > 0) {
-        coverage.selectedStorePaths.delete(canonicalMigrationFilePath(owner.target.storePath));
-        coverage.retainedDirectories.add(
-          path.dirname(canonicalMigrationFilePath(owner.target.storePath)),
-        );
-        if (owner.retainedImportVerified) {
-          for (const record of owner.records) {
-            if (record.transcriptPath) {
-              deferredSourcePaths.add(canonicalMigrationFilePath(record.transcriptPath));
+    const retainDeferredSources = () => {
+      for (const owner of archiveTargets) {
+        if (owner.deferredPluginIds.length > 0) {
+          coverage.selectedStorePaths.delete(canonicalMigrationFilePath(owner.target.storePath));
+          coverage.retainedDirectories.add(
+            path.dirname(canonicalMigrationFilePath(owner.target.storePath)),
+          );
+          if (owner.retainedImportVerified) {
+            for (const record of owner.records) {
+              if (record.transcriptPath) {
+                deferredSourcePaths.add(canonicalMigrationFilePath(record.transcriptPath));
+              }
             }
           }
         }
       }
-    }
-    await archiveLegacyArtifacts(archiveTargets, coverage, activeRun);
+    };
+    const publishArchive = (remove: () => void, retainSource: () => void) => {
+      const conflict = withDeferredPluginMigrationsCurrent<
+        readonly DeferredPluginMigration[] | undefined
+      >(
+        {
+          env,
+          expectedPending: pendingPlugins,
+          onConflict(pending) {
+            retainSource();
+            if (pending.length > 0) {
+              for (const owner of archiveTargets) {
+                if (!owner.retainedImportVerified && owner.verifiedSources) {
+                  recordDeferredPluginSessionImport({
+                    target: owner.target,
+                    env,
+                    pluginIds: pending.map((plugin) => plugin.pluginId),
+                    sources: owner.verifiedSources,
+                    recordCount: owner.report.legacyEntries,
+                  });
+                }
+              }
+            }
+            return pending;
+          },
+        },
+        () => {
+          remove();
+          return undefined;
+        },
+      );
+      if (conflict) {
+        for (const owner of archiveTargets) {
+          owner.deferredPluginIds = deferredPluginSessionStoreIds({
+            target: owner.target,
+            pending: conflict,
+          });
+          if (owner.deferredPluginIds.length > 0) {
+            owner.retainedImportVerified ||= owner.verifiedSources !== undefined;
+            owner.report.issues.push({
+              code: "plugin_migration_source_retained",
+              message: `Plugin migration obligations changed before archival. Original session migration inputs remain pending for plugin(s): ${owner.deferredPluginIds.join(", ")}. Run openclaw doctor --fix after the plugin is available.`,
+            });
+          }
+        }
+        retainDeferredSources();
+        throw new DeferredPluginMigrationConflictError(conflict);
+      }
+    };
+    retainDeferredSources();
+    await archiveLegacyArtifacts(
+      archiveTargets,
+      coverage,
+      activeRun,
+      undefined,
+      undefined,
+      publishArchive,
+    );
     for (const { target, report } of archiveTargets) {
       appendActiveSqliteTranscriptFileIssues(target, report, deferredSourcePaths);
       updateMigrationManifestTarget(activeRun, createMigrationTargetInput(target), report.issues);
     }
-    await archiveImportedLegacySessionStores(archiveTargets, activeRun, coverage);
+    await archiveImportedLegacySessionStores(
+      archiveTargets,
+      activeRun,
+      coverage,
+      undefined,
+      publishArchive,
+    );
     const hasBlockingIssues = reports.some((report) => blockingIssueCount(report) > 0);
     activeRun.manifest.completedAt = new Date().toISOString();
     if (hasBlockingIssues) {
@@ -262,21 +332,46 @@ export async function settleRetainedDoctorSessionSources(
   report: DoctorSessionSqliteReport,
   completedPluginIds: readonly string[],
   authority: DoctorSqliteMaintenanceAuthority,
+  assertCompletionCurrent: () => void,
 ): Promise<void> {
   const plan = retainedArchivePlans.get(report);
   if (!plan) {
     return;
   }
-  authority.assertCurrent();
+  const assertCurrent = () => {
+    authority.assertCurrent();
+    assertCompletionCurrent();
+  };
+  assertCurrent();
   retainedArchivePlans.delete(report);
   const completed = new Set(completedPluginIds);
-  const pending = readDeferredPluginMigrations({ env: plan.env }).filter(
-    (plugin) => !completed.has(plugin.pluginId),
-  );
-  if (pending.length > 0) {
+  const expectedPending = readDeferredPluginMigrations({ env: plan.env });
+  const remainingPending = expectedPending.filter((plugin) => !completed.has(plugin.pluginId));
+  if (remainingPending.length > 0) {
     return;
   }
-  const assertCurrent = () => authority.assertCurrent();
+  const publishArchive = (remove: () => void, retainSource: () => void) => {
+    const conflict = withDeferredPluginMigrationsCurrent<
+      readonly DeferredPluginMigration[] | undefined
+    >(
+      {
+        env: plan.env,
+        expectedPending,
+        onConflict(pending) {
+          authority.assertCurrent();
+          retainSource();
+          return pending;
+        },
+      },
+      () => {
+        remove();
+        return undefined;
+      },
+    );
+    if (conflict) {
+      throw new DeferredPluginMigrationConflictError(conflict);
+    }
+  };
   const verifyImports = () => {
     assertCurrent();
     for (const { owner, receipt } of plan.owners) {
@@ -325,13 +420,26 @@ export async function settleRetainedDoctorSessionSources(
     const capturedSources = new Set(
       plan.owners.flatMap(({ receipt }) => receipt.sources.map((source) => source.path)),
     );
-    await archiveLegacyArtifacts(owners, coverage, activeRun, assertCurrent, capturedSources);
+    await archiveLegacyArtifacts(
+      owners,
+      coverage,
+      activeRun,
+      assertCurrent,
+      capturedSources,
+      publishArchive,
+    );
     verifyImports();
     const transcriptIssue = owners.flatMap((owner) => owner.report.issues)[0];
     if (transcriptIssue) {
       throw new Error(transcriptIssue.message);
     }
-    await archiveImportedLegacySessionStores(owners, activeRun, coverage, assertCurrent);
+    await archiveImportedLegacySessionStores(
+      owners,
+      activeRun,
+      coverage,
+      assertCurrent,
+      publishArchive,
+    );
     verifyImports();
     const issue = owners.flatMap((owner) => owner.report.issues)[0];
     if (issue || owners.some((owner) => fs.existsSync(owner.target.storePath))) {
@@ -762,12 +870,10 @@ async function inspectOrMigrateTarget(params: {
   if (params.mode === "import") {
     const deferredPluginIds = params.deferredPluginIds ?? [];
     let retainedImportVerified = retainedImport !== undefined;
-    if (deferredPluginIds.length > 0 && validationPassed && report.issues.length === 0) {
-      if (!retainedImport) {
-        const indexIdentity = params.expectedIndexIdentity;
-        if (!indexIdentity) {
-          throw new Error("Deferred plugin session import has no verified source index.");
-        }
+    let verifiedSources = retainedImport?.sources;
+    const indexIdentity = params.expectedIndexIdentity;
+    if (!retainedImport && indexIdentity && validationPassed && report.issues.length === 0) {
+      try {
         const sources = new Map<string, MigrationArtifactIdentity>([
           [path.resolve(params.target.storePath), indexIdentity],
         ]);
@@ -788,6 +894,22 @@ async function inspectOrMigrateTarget(params: {
             }
           }
         }
+        verifiedSources = [...sources].map(([sourcePath, identity]) => ({
+          path: sourcePath,
+          identity,
+        }));
+      } catch (error) {
+        report.issues.push({
+          code: "transcript_archive_failed",
+          message: formatErrorMessage(error),
+        });
+      }
+    }
+    if (deferredPluginIds.length > 0 && validationPassed && report.issues.length === 0) {
+      if (!retainedImport) {
+        if (!verifiedSources) {
+          throw new Error("Deferred plugin session import has no verified source index.");
+        }
         recordDeferredPluginSessionImport({
           target: {
             ...params.target,
@@ -795,7 +917,7 @@ async function inspectOrMigrateTarget(params: {
           },
           env: params.env,
           pluginIds: deferredPluginIds,
-          sources: [...sources].map(([sourcePath, identity]) => ({ path: sourcePath, identity })),
+          sources: verifiedSources,
           recordCount: records.length,
         });
         retainedImportVerified = true;
@@ -812,6 +934,7 @@ async function inspectOrMigrateTarget(params: {
       validated: validationPassed,
       deferredPluginIds,
       retainedImportVerified,
+      verifiedSources,
       records: records
         .filter((record) => !record.historical?.archiveMove)
         .map(({ entry, ...record }) => Object.assign(record, { sessionId: entry.sessionId })),
@@ -1336,6 +1459,7 @@ async function archiveLegacyArtifacts(
   activeRun: ActiveSessionSqliteMigrationRun,
   assertCurrent?: () => void,
   capturedSources?: ReadonlySet<string>,
+  publishSourceRemoval?: (remove: () => void, retainSource: () => void) => void,
 ): Promise<void> {
   const {
     selectedStorePaths,
@@ -1591,6 +1715,7 @@ async function archiveLegacyArtifacts(
               assertCurrent();
             }
           : undefined,
+        publishSourceRemoval,
       );
       assertCurrent?.();
       completed.add(move.sourcePath);
@@ -1600,6 +1725,9 @@ async function archiveLegacyArtifacts(
         : report.archivedTranscriptFiles
       ).push(move.archivePath);
     } catch (error) {
+      if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
+        break;
+      }
       for (const owner of referencingOwners.keys()) {
         recordFailure(owner, move.sourcePath, error, move.kind === "unreferenced-jsonl");
       }
@@ -1623,6 +1751,7 @@ async function archiveImportedLegacySessionStores(
   activeRun: ActiveSessionSqliteMigrationRun,
   coverage: ReturnType<typeof gatherLegacyArchiveCoverage>,
   assertCurrent?: () => void,
+  publishSourceRemoval?: (remove: () => void, retainSource: () => void) => void,
 ): Promise<void> {
   const byStore = new Map<string, LegacyArchiveTarget[]>();
   for (const owner of owners) {
@@ -1690,6 +1819,7 @@ async function archiveImportedLegacySessionStores(
               assertCurrent();
             }
           : undefined,
+        publishSourceRemoval,
       );
       assertCurrent?.();
       for (const { target } of entries) {
@@ -1697,6 +1827,9 @@ async function archiveImportedLegacySessionStores(
       }
       first.report.archivedLegacyStoreFiles!.push(move.archivePath);
     } catch (error) {
+      if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
+        break;
+      }
       for (const { report, target } of entries) {
         report.issues.push({
           code: "legacy_store_archive_failed",

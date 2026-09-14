@@ -114,6 +114,97 @@ function seed(
 }
 
 describe("session sources needed by deferred plugin migrations", () => {
+  it.each(["transcript", "legacy-store"] as const)(
+    "retains an ordinary import's %s when another Doctor records pending work before unlink",
+    async (kind) => {
+      await withOpenClawTestState({ label: "deferred-plugin-archive-race" }, async (state) => {
+        const { cfg, storePath, originals, scope } = seed(state);
+        const run = () =>
+          runDoctorSessionSqlite({ cfg, env: state.env, allAgents: true, mode: "import" });
+        recordDeferredPluginMigrations({
+          env: state.env,
+          pending: [],
+          resolvedPluginIds: ["fixture-plugin"],
+        });
+        const protectedSource =
+          kind === "legacy-store"
+            ? storePath
+            : path.join(path.dirname(storePath), "legacy-kept.jsonl");
+        let pendingChanged = false;
+        const publish = directoryDurability.publishFileExclusive;
+        const publication = vi
+          .spyOn(directoryDurability, "publishFileExclusive")
+          .mockImplementation(async (options) => {
+            const result = await publish(options);
+            if (!pendingChanged && options.sourcePath === protectedSource) {
+              pendingChanged = true;
+              recordDeferredPluginMigrations({
+                env: state.env,
+                pending: [
+                  {
+                    pluginId: "fixture-plugin",
+                    reason: "Another Doctor found additional state migration work.",
+                    command: "openclaw doctor --fix",
+                    requiresStateMigration: true,
+                  },
+                ],
+              });
+            }
+            return result;
+          });
+
+        const interrupted = await run();
+        publication.mockRestore();
+        expect(pendingChanged).toBe(true);
+        expect(fs.existsSync(protectedSource)).toBe(true);
+        expect(fs.statSync(protectedSource).nlink).toBe(1);
+        expect(fs.readFileSync(protectedSource)).toEqual(originals.get(protectedSource));
+        expect(readDeferredPluginMigrations({ env: state.env })).toEqual([
+          expect.objectContaining({ pluginId: "fixture-plugin", requiresStateMigration: true }),
+        ]);
+        expect(interrupted.targets.flatMap((target) => target.issues)).toContainEqual(
+          expect.objectContaining({
+            message: expect.stringContaining("Plugin migration obligations changed"),
+          }),
+        );
+
+        await upsertSessionEntryCore(
+          { ...scope, sessionKey: "agent:main:kept" },
+          { label: "edited after interrupted archival" },
+        );
+        await deleteSessionEntryLifecycle({
+          ...scope,
+          target: { canonicalKey: "agent:main:deleted", storeKeys: ["agent:main:deleted"] },
+          archiveTranscript: false,
+          deleteTranscriptWithoutArchive: true,
+        });
+        expect((await run()).totals.importedEntries).toBe(0);
+        expect(
+          loadExactSessionEntry({ ...scope, sessionKey: "agent:main:kept" })?.entry.label,
+        ).toBe("edited after interrupted archival");
+        expect(
+          loadExactSessionEntry({ ...scope, sessionKey: "agent:main:deleted" }),
+        ).toBeUndefined();
+        expect(fs.readFileSync(protectedSource)).toEqual(originals.get(protectedSource));
+
+        recordDeferredPluginMigrations({
+          env: state.env,
+          pending: [],
+          resolvedPluginIds: ["fixture-plugin"],
+        });
+        const resumed = await run();
+        expect(resumed.totals.importedEntries).toBe(0);
+        expect(resumed.targets.flatMap((target) => target.issues)).toEqual([]);
+        expect(fs.existsSync(storePath)).toBe(false);
+        for (const source of originals.keys()) {
+          if (source.endsWith(".jsonl")) {
+            expect(fs.existsSync(source)).toBe(false);
+          }
+        }
+      });
+    },
+  );
+
   it.each([
     { changeSource: false, siblingPending: false, pendingChange: "none" },
     { changeSource: true, siblingPending: false, pendingChange: "none" },
@@ -265,6 +356,9 @@ describe("session sources needed by deferred plugin migrations", () => {
           );
           for (const [file, bytes] of originals) {
             expect(fs.readFileSync(file)).toEqual(bytes);
+            if (pendingChange === "publication") {
+              expect(fs.statSync(file).nlink).toBe(1);
+            }
           }
         } else if (changeSource) {
           expect(() => assertSessionStoreMigrationComplete({ cfg, env: state.env })).toThrow(
