@@ -9,6 +9,7 @@ import {
   isSessionProjectionToolContinuation,
   readFinalContentIdentity,
   readSessionProjectionFinalMessageIdentity,
+  sameTranscriptIdentity,
 } from "./session-projection-final-identity.js";
 import {
   hasDisplayableSessionMessage,
