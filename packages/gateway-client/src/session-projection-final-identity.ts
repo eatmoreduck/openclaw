@@ -12,32 +12,6 @@ import {
   type SessionMessageIdentity,
 } from "./session-projection-message-identity.js";
 
-/** Whether two transcript rows are the same durable identity. */
-export function sameTranscriptIdentity(
-  left: SessionMessageIdentity | null,
-  right: SessionMessageIdentity | null,
-): boolean {
-  if (!left || !right || left.role !== right.role) {
-    return false;
-  }
-  if (left.isImported || right.isImported) {
-    if (!left.isImported || !right.isImported) {
-      return false;
-    }
-    if (left.externalSource || right.externalSource) {
-      return Boolean(left.externalSource && left.externalSource === right.externalSource);
-    }
-    // Partial provider IDs are unsafe, but a same-scope persisted sequence is authoritative.
-    return left.sequence !== null && right.sequence !== null && left.sequence === right.sequence;
-  }
-  if (left.id || right.id) {
-    // A missing durable ID cannot adopt another canonical row by sequence alone.
-    return Boolean(left.id && right.id && left.id === right.id);
-  }
-  // A run can publish several durable messages; its ID identifies ownership, not a row.
-  return left.sequence !== null && right.sequence !== null && left.sequence === right.sequence;
-}
-
 /**
  * The class of rows the #148297 relaxation newly admits as finals: persisted
  * with the run's terminal tool stop reason while carrying no tool-call

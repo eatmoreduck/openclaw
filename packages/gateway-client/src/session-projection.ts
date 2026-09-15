@@ -10,7 +10,6 @@ import {
   isToolUsePersistedFinalRow,
   readFinalContentIdentity,
   readSessionProjectionFinalMessageIdentity,
-  sameTranscriptIdentity,
 } from "./session-projection-final-identity.js";
 import {
   hasDisplayableSessionMessage,
@@ -394,11 +393,12 @@ function insertEntry(
 }
 
 export function projectLiveSessionMessage(
-  state: SessionProjectionState,
+  initialState: SessionProjectionState,
   message: unknown,
   envelope?: SessionMessageEnvelope,
   scope: SessionProjectionScope = {},
 ): SessionProjectionState {
+  let state = initialState;
   if (!scopesMatch(state.scope, scope)) {
     return state;
   }
