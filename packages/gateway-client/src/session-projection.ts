@@ -374,11 +374,16 @@ export function projectLiveSessionMessage(
   const existing =
     matches.find((entry) => sameTranscriptIdentity(entry.identity, incoming.identity)) ??
     (matches.length === 1 ? matches[0] : undefined);
-  if (existing && !sameTranscriptIdentity(existing.identity, incoming.identity)) {
+  if (
+    existing &&
+    !sameTranscriptIdentity(existing.identity, incoming.identity) &&
+    !sameAssistantPersistenceReceipt(existing.identity, incoming.identity)
+  ) {
     const durable = existing.identity?.id ? existing : incoming.identity.id ? incoming : null;
     const provisional = durable === existing ? incoming : existing;
     if (durable && isToolUsePersistedFinalRow(durable.message)) {
-      // Exact durable replay never needs inference. For provisional adoption,
+      // Exact durable identities and persistence receipts never need inference.
+      // For provisional adoption,
       // use the snapshot owner in both arrival orders, excluding the live copy
       // itself from the history that can contradict the terminal position.
       const history = state.entries.filter((entry) => entry !== provisional);
