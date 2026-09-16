@@ -16,15 +16,16 @@ import {
   isSessionProjectionErrorMessage,
 } from "./session-projection-message-content.js";
 import {
+  createSessionProjectionEntry as createEntry,
   isLocallyOptimisticSessionMessage,
   sameTranscriptIdentity,
   normalizeSessionProjectionRunId,
   readAssistantStreamSegmentIdentity,
-  readSessionMessageIdentity,
   sameAssistantPersistenceReceipt,
   readSessionProjectionString as readNonemptyString,
   type SessionMessageEnvelope,
   type SessionMessageIdentity,
+  type SessionProjectionEntry,
 } from "./session-projection-message-identity.js";
 import { retainSessionProjectionRuns } from "./session-projection-run-retention.js";
 export {
@@ -46,6 +47,7 @@ export {
 } from "./session-projection-message-identity.js";
 export { isSessionProjectionErrorMessage } from "./session-projection-message-content.js";
 export type {
+  SessionProjectionEntry,
   SessionMessageEnvelope,
   SessionMessageIdentity,
 } from "./session-projection-message-identity.js";
@@ -83,15 +85,6 @@ export type SessionProjectionRun = {
   stopReason?: string;
   errorKind?: string;
   errorMessage?: string;
-};
-
-export type SessionProjectionEntry = {
-  message: unknown;
-  identity: SessionMessageIdentity | null;
-  afterSequence?: number | null;
-  live: boolean;
-  pending: boolean;
-  pendingRunId: string | null;
 };
 
 export type SessionProjectionState = {
@@ -142,35 +135,6 @@ export type SessionProjectionEvent = ScopedSessionProjectionEvent &
     | { type: "transportGap" }
     | { type: "reconnected" }
   );
-
-function createEntry(
-  message: unknown,
-  options?: { envelope?: SessionMessageEnvelope; live?: boolean; pendingRunId?: string | null },
-): SessionProjectionEntry {
-  const identity = readSessionMessageIdentity(message, options?.envelope);
-  const fallback = readRecord(readRecord(message)?.openclawStreamFallback);
-  const provisionalFallback = Boolean(
-    fallback && identity?.role === "assistant" && !identity.id && identity.sequence === null,
-  );
-  const inferredPendingRunId =
-    options?.live !== true && isLocallyOptimisticSessionMessage(message) ? identity?.runId : null;
-  const pendingRunId = normalizeSessionProjectionRunId(
-    options?.pendingRunId ?? inferredPendingRunId,
-  );
-  return {
-    message,
-    identity,
-    afterSequence:
-      options?.envelope?.afterSequence !== undefined
-        ? options.envelope.afterSequence
-        : provisionalFallback && typeof fallback?.afterSequence === "number"
-          ? fallback.afterSequence
-          : undefined,
-    live: options?.live === true || provisionalFallback,
-    pending: pendingRunId !== null,
-    pendingRunId,
-  };
-}
 
 function createProjectionEntries(messages: readonly unknown[]): SessionProjectionEntry[] {
   let pendingUserRunId: string | null = null;
